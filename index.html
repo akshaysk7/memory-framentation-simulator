@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Fragmentation Simulator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* ---------- Theme tokens (light, plus automatic dark mode) ---------- */
+  :root {
+    --bg:#f3f4f7; --card:#ffffff; --text:#1c2230; --muted:#5f6878; --border:#dce0e7;
+    --hole:#cfd4dc; --hole-text:#3b4350; --accent:#2f6fde;
+    --ok:#1d7f46; --ok-bg:#e6f5ec; --bad:#c22f3b; --bad-bg:#fcebed; --info:#2f6fde; --info-bg:#e9f0fd;
+    --purple:#7a4bd1; --orange:#b5650d; --anim:450ms;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#13161b; --card:#1c2027; --text:#e5e8ee; --muted:#9aa3b1; --border:#2d333d;
+      --hole:#3a414c; --hole-text:#cdd3dc; --accent:#5d8ff0;
+      --ok:#4cc47f; --ok-bg:#15301f; --bad:#ff6d78; --bad-bg:#3a1a1e; --info:#7ea6f5; --info-bg:#1a2538;
+      --purple:#b08cf5; --orange:#f0a24a; color-scheme:dark;
+    }
+  }
+  /* An explicit dark-theme choice (same values as above) */
+  :root[data-theme="dark"] {
+    --bg:#13161b; --card:#1c2027; --text:#e5e8ee; --muted:#9aa3b1; --border:#2d333d;
+    --hole:#3a414c; --hole-text:#cdd3dc; --accent:#5d8ff0;
+    --ok:#4cc47f; --ok-bg:#15301f; --bad:#ff6d78; --bad-bg:#3a1a1e; --info:#7ea6f5; --info-bg:#1a2538;
+    --purple:#b08cf5; --orange:#f0a24a; color-scheme:dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding-block:14px; padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)); background:var(--card); border-bottom:1px solid var(--border); }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:2px 0 0; color:var(--muted); }
+  .layout { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:16px; padding-block:16px; padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)); max-width:1600px; margin:0 auto; }
+  aside { position:sticky; top:16px; align-self:start; max-height:calc(100vh - 32px); overflow:auto; }
+  @media (max-width:1050px) { .layout { grid-template-columns:1fr; } aside { position:static; max-height:none; } }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .muted { color:var(--muted); } .small { font-size:12px; font-weight:400; }
+  .row { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; margin-bottom:8px; }
+  .sep { width:1px; height:24px; background:var(--border); }
+  label { display:inline-flex; align-items:center; gap:5px; }
+  input, select, button { font:inherit; color:var(--text); }
+  input[type=number], input[type=text], select {
+    padding:5px 7px; border:1px solid var(--border); border-radius:6px; background:var(--bg);
+  }
+  input[type=number] { width:76px; }
+  input[type=text] { width:80px; }
+  button { padding:6px 12px; border:1px solid var(--border); border-radius:6px; background:var(--card); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--bad); }
+  button:disabled, input:disabled, select:disabled { opacity:.45; cursor:not-allowed; }
+  .hint { margin:4px 0 10px; color:var(--muted); font-size:12px; }
+
+  /* ---------- Memory bar ---------- */
+  .barwrap { position:relative; padding-top:16px; }
+  .membar { position:relative; height:92px; background:var(--hole); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .seg { position:absolute; top:0; bottom:0; overflow:hidden; display:flex; align-items:center; justify-content:center;
+         transition:left var(--anim) ease, width var(--anim) ease; border-right:1px solid rgba(0,0,0,.35); }
+  .seg.proc { z-index:2; color:#fff; cursor:pointer; }
+  .seg.hole { z-index:1; background:var(--hole); color:var(--hole-text); border-right:1px dashed rgba(0,0,0,.4); }
+  .seg .lbl { position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; font-size:12px; line-height:1.25; white-space:nowrap; pointer-events:none; }
+  .seg.proc .lbl { text-shadow:0 1px 2px rgba(0,0,0,.6); }
+  .seg .lbl span { font-size:11px; opacity:.9; }
+  /* hatched area = internal fragmentation (allocated but unused) */
+  .seg .waste { position:absolute; top:0; bottom:0; right:0;
+    background:repeating-linear-gradient(45deg, rgba(255,255,255,.65) 0 3px, rgba(0,0,0,.25) 3px 7px); }
+  .seg.selected { outline:3px solid var(--text); outline-offset:-3px; z-index:3; }
+  .seg.moving { box-shadow:inset 0 0 0 3px #ffd84d; z-index:4; }
+  .seg.flash { animation:flash 1s ease; }
+  @keyframes flash { 0% { filter:brightness(1.8); } 100% { filter:brightness(1); } }
+  .ptr { position:absolute; top:0; transform:translateX(-50%); font-size:11px; color:var(--orange); white-space:nowrap; transition:left var(--anim) ease; }
+  .axis { position:relative; height:18px; font-size:11px; color:var(--muted); margin-top:2px; }
+  .axis span { position:absolute; transform:translateX(-50%); }
+  .axis span:first-child { transform:none; } .axis span:last-child { transform:translateX(-100%); }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; font-size:12px; color:var(--muted); margin:4px 0 8px; }
+  .legend i { display:inline-block; width:14px; height:12px; border-radius:2px; vertical-align:-2px; margin-right:4px; border:1px solid rgba(0,0,0,.2); }
+  .membar.mini { height:22px; border-radius:4px; }
+  .membar.mini .seg { transition:none; cursor:default; }
+
+  /* ---------- Result banner + stats ---------- */
+  .banner { padding:10px 12px; border-radius:8px; border-left:4px solid; margin:6px 0 12px; }
+  .banner.ok { background:var(--ok-bg); border-color:var(--ok); }
+  .banner.bad { background:var(--bad-bg); border-color:var(--bad); }
+  .banner.info { background:var(--info-bg); border-color:var(--info); }
+  .tag { display:inline-block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; margin-right:6px; }
+  .banner.ok .tag { color:var(--ok); } .banner.bad .tag { color:var(--bad); } .banner.info .tag { color:var(--info); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; }
+  .tile { border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+  .tile .k { font-size:12px; color:var(--muted); }
+  .tile .v { font-size:19px; font-weight:650; }
+  .tile .sub { font-size:11px; color:var(--muted); }
+  .meter { height:6px; background:var(--border); border-radius:3px; overflow:hidden; margin:3px 0; }
+  .meter i { display:block; height:100%; background:var(--bad); }
+
+  /* ---------- Tables ---------- */
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:5px 8px; border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
+  th { font-size:12px; color:var(--muted); font-weight:600; }
+  th:first-child, td:first-child { text-align:left; }
+  tr.sel td { background:var(--info-bg); }
+  #procBody tr { cursor:pointer; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; }
+  .mini-btn { padding:2px 8px; font-size:12px; }
+  .tablewrap { overflow-x:auto; }
+  td.best { color:var(--ok); font-weight:700; }
+  tr.ref td { color:var(--muted); font-style:italic; }
+
+  /* ---------- Workload player ---------- */
+  .ops { position:relative; max-height:210px; overflow:auto; border:1px solid var(--border); border-radius:6px; font:12px/1.6 ui-monospace,Consolas,monospace; }
+  .op { display:flex; gap:8px; padding:0 8px; }
+  .op .n { color:var(--muted); width:28px; text-align:right; }
+  .op > span:first-child { width:12px; }
+  .op.done { color:var(--muted); }
+  .op.current { background:var(--info-bg); font-weight:700; color:var(--text); }
+  .okm { color:var(--ok); } .badm { color:var(--bad); }
+  #stepInfo { font-weight:600; }
+  input[type=range] { width:130px; }
+
+  /* ---------- Log ---------- */
+  .log { height:300px; overflow:auto; font:12px/1.45 ui-monospace,Consolas,monospace; border:1px solid var(--border); border-radius:6px; padding:4px 0; }
+  .le { padding:1px 8px 1px 6px; border-left:3px solid transparent; }
+  .le .n { color:var(--muted); display:inline-block; min-width:28px; }
+  .le.alloc { border-color:var(--ok); } .le.fail { border-color:var(--bad); color:var(--bad); }
+  .le.free { border-color:var(--info); } .le.compact { border-color:var(--purple); }
+  .le.reset { border-color:var(--orange); } .le.info { color:var(--muted); }
+
+  /* ---------- Explanations ---------- */
+  .explain details { border-bottom:1px solid var(--border); padding:6px 0; }
+  .explain summary { cursor:pointer; font-weight:600; }
+  .explain details.current summary { color:var(--accent); }
+  .explain details.current summary::after { content:"  ← current"; font-weight:400; font-size:12px; }
+  .explain p, .explain ul { margin:6px 0; font-size:13px; }
+  .explain ul { padding-left:18px; }
+  .formula { font-family:ui-monospace,Consolas,monospace; background:var(--bg); padding:4px 8px; border-radius:4px; display:inline-block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Memory Fragmentation Simulator</h1>
+  <p>Contiguous memory allocation · First / Best / Worst / Next Fit · internal &amp; external fragmentation · coalescing · compaction · buddy system</p>
+</header>
+
+<div class="layout">
+<main>
+
+  <!-- ============ SETTINGS ============ -->
+  <section class="card">
+    <h2>Settings</h2>
+    <div class="row">
+      <label>Total memory <input id="totalSize" type="number" min="16" value="1024"> KB</label>
+      <button id="applySize">Apply &amp; reset</button>
+      <span class="sep"></span>
+      <label>Strategy
+        <select id="strategy">
+          <option value="first">First Fit</option>
+          <option value="best">Best Fit</option>
+          <option value="worst">Worst Fit</option>
+          <option value="next">Next Fit</option>
+        </select>
+      </label>
+      <span class="sep"></span>
+      <label><input type="checkbox" id="coalesce" checked> Coalesce holes on free</label>
+      <button id="mergeNow" title="Merge every run of adjacent holes right now">Merge holes now</button>
+    </div>
+    <div class="row">
+      <span class="muted">Mode:</span>
+      <label><input type="radio" name="mode" value="variable" checked> Variable partitions (exact size)</label>
+      <label><input type="radio" name="mode" value="block"> Fixed block size</label>
+      <label><input id="blockSize" type="number" min="1" value="64"> KB</label>
+      <label><input type="radio" name="mode" value="buddy"> Buddy system, min block</label>
+      <label><input id="minBuddy" type="number" min="1" value="32"> KB</label>
+    </div>
+  </section>
+
+  <!-- ============ MEMORY MAP + STATS ============ -->
+  <section class="card">
+    <h2>Memory map <span class="muted small" id="mapCaption"></span></h2>
+    <div class="barwrap">
+      <div id="ptr" class="ptr">▼ next-fit</div>
+      <div id="membar" class="membar"></div>
+    </div>
+    <div id="axis" class="axis"></div>
+    <div class="legend">
+      <span><i style="background:hsl(210,58%,44%)"></i>Allocated process (name, requested/allocated KB)</span>
+      <span><i style="background:var(--hole)"></i>Free hole</span>
+      <span><i style="background:repeating-linear-gradient(45deg,#fff 0 3px,#777 3px 6px)"></i>Internal fragmentation</span>
+      <span style="color:var(--orange)">▼ Next-fit pointer</span>
+    </div>
+    <div id="banner" class="banner info"></div>
+    <div id="stats" class="stats"></div>
+  </section>
+
+  <!-- ============ MANUAL ACTIONS ============ -->
+  <section class="card">
+    <h2>Manual actions</h2>
+    <div class="row">
+      <label>Name <input id="pName" type="text" maxlength="12"></label>
+      <label>Size <input id="pSize" type="number" min="1" value="120"> KB</label>
+      <button id="allocBtn" class="primary">Allocate</button>
+      <span class="sep"></span>
+      <select id="freeSel"></select>
+      <button id="freeBtn">Free selected</button>
+      <span class="sep"></span>
+      <button id="compactBtn" title="Slide all processes to address 0 (animated)">Compact</button>
+      <button id="resetBtn" class="danger">Reset memory</button>
+    </div>
+    <p class="hint">Click a coloured block on the map (or a row below) to select it. Leave the name blank to use the suggested one.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Process</th><th>Start KB</th><th>End KB</th><th>Requested</th><th>Allocated</th><th>Internal waste</th><th></th></tr></thead>
+        <tbody id="procBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ WORKLOAD / STEP PLAYER ============ -->
+  <section class="card">
+    <h2>Workload &amp; step-by-step mode</h2>
+    <div class="row">
+      <select id="scenario">
+        <option value="random">Random workload (seeded)</option>
+        <option value="external" selected>Demo: external fragmentation → compaction</option>
+        <option value="coalesce">Demo: coalescing OFF vs ON</option>
+        <option value="internal">Demo: internal fragmentation (64 KB blocks)</option>
+        <option value="buddy">Demo: buddy system</option>
+      </select>
+      <button id="loadBtn" class="primary">Load workload</button>
+    </div>
+    <div class="row" id="randomParams">
+      <label>Requests N <input id="wN" type="number" min="1" value="40"></label>
+      <label>Seed <input id="wSeed" type="number" value="42"></label>
+      <label>Free % <input id="wFree" type="number" min="0" max="100" value="35"></label>
+      <label>Size <input id="wMin" type="number" min="1" value="20"> – <input id="wMax" type="number" min="1" value="220"> KB</label>
+    </div>
+    <div class="row">
+      <button id="rewindBtn" title="Back to step 0">⏮ Start</button>
+      <button id="prevBtn" title="Previous step (← key)">◀ Previous</button>
+      <button id="nextBtn" class="primary" title="Next step (→ key)">Next ▶</button>
+      <button id="playBtn" title="Auto-play (space)">⏵ Auto-play</button>
+      <label>Speed <input id="speed" type="range" min="100" max="2000" step="100" value="700"> <span id="speedLbl" class="muted small"></span></label>
+    </div>
+    <div class="row"><span id="stepInfo"></span></div>
+    <div id="ops" class="ops"></div>
+  </section>
+
+  <!-- ============ COMPARISON ============ -->
+  <section class="card">
+    <h2>Strategy comparison <span class="muted small">— the SAME workload run through every strategy</span></h2>
+    <div class="row">
+      <button id="compareBtn" class="primary">Run comparison on current workload</button>
+      <span class="muted small">Uses the loaded workload (or generates a random one from the parameters above).</span>
+    </div>
+    <div id="cmpOut"></div>
+  </section>
+</main>
+
+<aside>
+  <!-- ============ EVENT LOG ============ -->
+  <section class="card">
+    <h2>Event log <button id="clearLog" class="mini-btn" style="margin-left:auto">Clear</button></h2>
+    <div id="log" class="log"></div>
+  </section>
+
+  <!-- ============ EXPLANATIONS ============ -->
+  <section class="card explain">
+    <h2>Explanations</h2>
+    <details open>
+      <summary>Internal vs external fragmentation</summary>
+      <p><b>Internal fragmentation</b> is wasted space <i>inside</i> an allocated block. It appears when memory is handed out in fixed units (blocks, pages, buddy sizes) bigger than the request. Example: 70 KB with 64 KB blocks gets 128 KB, so 58 KB is wasted. The process owns that space, so nobody else can use it. It is drawn <b>hatched</b>.</p>
+      <p><b>External fragmentation</b> is wasted space <i>between</i> allocated blocks. There is enough free memory in total, but it is split into small holes that are not next to each other, so a large request fits nowhere. It comes from variable-size contiguous allocation as processes come and go.</p>
+      <p>Metric used here: <span class="formula">ext. frag = 1 − largest hole ÷ total free</span><br>0% means all free memory is one hole. Near 100% means it is scattered in tiny holes.</p>
+      <p><b>50-percent rule (Knuth):</b> with first fit, for every N allocated blocks about 0.5 N blocks are lost to fragmentation, so up to a third of memory can be unusable.</p>
+    </details>
+    <details data-strategy="first">
+      <summary>First Fit</summary>
+      <p>Scan the holes from the start of memory and take the <b>first</b> one big enough. The rest of that hole stays free.</p>
+      <p>Fast because it stops early. Small leftover holes tend to pile up near the start of memory.</p>
+    </details>
+    <details data-strategy="best">
+      <summary>Best Fit</summary>
+      <p>Check <b>every</b> hole and take the <b>smallest</b> one that is big enough, which gives the smallest leftover.</p>
+      <p>Saves large holes for large requests, but leaves tiny slivers that are too small to use. It has to search the whole list unless the list is sorted by size.</p>
+    </details>
+    <details data-strategy="worst">
+      <summary>Worst Fit</summary>
+      <p>Take the <b>largest</b> hole. The idea is that the leftover stays big enough to be useful.</p>
+      <p>In practice it quickly breaks up the big holes that large processes need, so it usually does worst in simulations.</p>
+    </details>
+    <details data-strategy="next">
+      <summary>Next Fit</summary>
+      <p>Like First Fit, but the search starts where the <b>last allocation ended</b> (the ▼ pointer) and wraps around to the start.</p>
+      <p>This spreads allocations across memory and avoids rescanning the crowded start. It often fragments the large hole at the end more than First Fit does.</p>
+    </details>
+    <details>
+      <summary>Coalescing</summary>
+      <p>When a process is freed, its hole is <b>merged with any free neighbour</b> (left and right) into one bigger hole. This is cheap because only the neighbours are checked.</p>
+      <p>Without it, memory fills with holes that sit side by side but count as separate. A request can then fail even though the free space is contiguous. Untick the option to see this. Coalescing <b>cannot</b> join holes that have an allocated block between them; that needs compaction.</p>
+    </details>
+    <details>
+      <summary>Compaction</summary>
+      <p>Move (relocate) every allocated block to one end of memory so that all free space becomes <b>one big hole</b>. This removes external fragmentation completely.</p>
+      <p><b>Cost:</b> every moved byte has to be copied and the moved processes are paused. The simulator reports the KB moved. It only works with <b>dynamic relocation</b> (execution-time binding, for example a base/relocation register), because the process's addresses change.</p>
+    </details>
+    <details>
+      <summary>Fixed block size mode</summary>
+      <p>Every request is rounded <b>up</b> to a multiple of the block size. Holes are always whole blocks, so there are no tiny slivers. The trade-off is <b>internal fragmentation</b> in the last block of each process.</p>
+      <p>Paging is the same idea taken further: a process doesn't have to be contiguous, so external fragmentation disappears and only internal fragmentation in the last page remains.</p>
+    </details>
+    <details>
+      <summary>Buddy system</summary>
+      <p>Memory size is a power of 2, and each request is rounded up to the next power of 2. If no free block of that size exists, a larger block is <b>split in half</b> again and again. The two halves are "buddies".</p>
+      <p>When a block is freed, it <b>merges with its buddy</b> if the buddy is free too, and this repeats upward. The buddy of a block at address A with size S is at <span class="formula">A XOR S</span>.</p>
+      <p>Splitting and merging are fast (Linux uses this for physical pages). The drawback is internal fragmentation of up to about 50%: 129 KB needs a 256 KB block. Two free neighbours that are not buddies cannot merge.</p>
+    </details>
+    <details>
+      <summary>How to demo this</summary>
+      <ul>
+        <li>Load <b>Demo: external fragmentation</b>, press Next ▶ repeatedly. Step 9 fails, step 10 compacts, step 11 succeeds.</li>
+        <li>Load <b>Demo: coalescing</b> (coalescing starts OFF). Step 6 fails. Tick "Coalesce", press ⏮ and replay: it succeeds.</li>
+        <li>Load a <b>Random workload</b>, then <b>Run comparison</b>.</li>
+        <li>Keyboard: → next, ← previous, space play/pause.</li>
+      </ul>
+    </details>
+  </section>
+</aside>
+</div>
+
+<script>
+'use strict';
+
+/* =========================================================================
+   1. SMALL UTILITIES
+   ========================================================================= */
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const isPow2 = n => Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0;
+const pct = x => (x * 100).toFixed(1) + '%';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+
+/** Smallest power of two that is >= n (used by the buddy system). */
+function nextPow2(n) { let p = 1; while (p < n) p *= 2; return p; }
+
+/** A stable colour per process name, so P3 has the same colour everywhere (golden-angle hue spacing). */
+function colorFor(name) {
+  const m = /(\d+)$/.exec(name);
+  let n = 0;
+  if (m) n = +m[1];
+  else for (const ch of name) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
+  return `hsl(${((n * 137.508) % 360).toFixed(0)},58%,44%)`;
+}
+
+const STRATEGY_NAMES = { first:'First Fit', best:'Best Fit', worst:'Worst Fit', next:'Next Fit' };
+const MODE_NAMES = { variable:'Variable partitions', block:'Fixed block size', buddy:'Buddy system' };
+
+
+/* =========================================================================
+   2. THE MEMORY MANAGER (all the OS algorithms live here)
+   -------------------------------------------------------------------------
+   Memory is modelled as an ordered list of contiguous blocks covering the
+   whole address range [0, totalSize):
+       { start, size, name, requested }
+   name === null  -> a free hole
+   name !== null  -> allocated to that process; `requested` is what the
+                     process asked for (size - requested = internal waste)
+   The list is always sorted by start address and has no gaps.
+   This class has no UI code, so the comparison view can run many copies.
+   ========================================================================= */
+class MemoryManager {
+  constructor(cfg) {
+    this.totalSize = cfg.totalSize;   // KB
+    this.strategy  = cfg.strategy;    // 'first' | 'best' | 'worst' | 'next'
+    this.mode      = cfg.mode;        // 'variable' | 'block' | 'buddy'
+    this.blockSize = cfg.blockSize;   // allocation unit in 'block' mode
+    this.minBuddy  = cfg.minBuddy;    // smallest block in 'buddy' mode
+    this.coalesce  = cfg.coalesce;    // merge neighbouring holes on free?
+    this.reset();
+  }
+
+  /** Empty memory: one hole covering everything. */
+  reset() {
+    this.blocks = [{ start: 0, size: this.totalSize, name: null }];
+    this.nextPtr = 0;   // Next Fit: address where the previous allocation ended
+    this.counters = { allocOk: 0, allocFail: 0, extFragFails: 0, frees: 0, compactions: 0, movedKB: 0 };
+  }
+
+  /** Deep copies of the state, used by the step player's "Previous" button. */
+  snapshot() { return JSON.parse(JSON.stringify({ blocks: this.blocks, nextPtr: this.nextPtr, counters: this.counters })); }
+  restore(s) { const c = JSON.parse(JSON.stringify(s)); this.blocks = c.blocks; this.nextPtr = c.nextPtr; this.counters = c.counters; }
+
+  find(name) { return this.blocks.findIndex(b => b.name === name); }
+
+  /** How much memory a request really gets in the current mode. */
+  roundUp(req) {
+    if (this.mode === 'block') return Math.ceil(req / this.blockSize) * this.blockSize;  // whole blocks
+    if (this.mode === 'buddy') return Math.max(this.minBuddy, nextPow2(req));           // power of 2
+    return req;                                                                          // exact size
+  }
+
+  /** All the numbers shown in the stats panel. */
+  stats() {
+    let free = 0, largest = 0, holes = 0, used = 0, requested = 0, procs = 0;
+    for (const b of this.blocks) {
+      if (b.name) { used += b.size; requested += b.requested; procs++; }
+      else { free += b.size; holes++; largest = Math.max(largest, b.size); }
+    }
+    return {
+      free, largest, holes, used, requested, procs,
+      internal: used - requested,                     // wasted inside allocated blocks
+      extFrag: free > 0 ? 1 - largest / free : 0,     // 1 − largest hole / total free
+    };
+  }
+
+  /** Largest run of free memory if adjacent holes were merged (shows what coalescing would give). */
+  largestContiguousFree() {
+    let best = 0, run = 0;
+    for (const b of this.blocks) {
+      if (b.name) run = 0;
+      else { run += b.size; best = Math.max(best, run); }
+    }
+    return best;
+  }
+
+  /* ---------------------------------------------------------------------
+     PLACEMENT STRATEGIES: pick a hole for a request of `need` KB.
+     Returns an index into this.blocks, or -1 if no single hole is big enough.
+     --------------------------------------------------------------------- */
+  chooseHole(need) {
+    const holes = [];                                   // indices of free blocks, in address order
+    this.blocks.forEach((b, i) => { if (!b.name) holes.push(i); });
+    const fits = i => this.blocks[i].size >= need;
+
+    switch (this.strategy) {
+      case 'first': {
+        // FIRST FIT: the first hole from address 0 that is big enough.
+        const i = holes.find(fits);
+        return i === undefined ? -1 : i;
+      }
+      case 'best': {
+        // BEST FIT: scan ALL holes and keep the smallest one that fits.
+        let best = -1;
+        for (const i of holes) if (fits(i) && (best < 0 || this.blocks[i].size < this.blocks[best].size)) best = i;
+        return best;
+      }
+      case 'worst': {
+        // WORST FIT: scan ALL holes and keep the largest one (if it fits).
+        let worst = -1;
+        for (const i of holes) if (fits(i) && (worst < 0 || this.blocks[i].size > this.blocks[worst].size)) worst = i;
+        return worst;
+      }
+      case 'next': {
+        // NEXT FIT: like First Fit, but start at the hole containing or after
+        // nextPtr (where the last allocation ended) and wrap around once.
+        if (!holes.length) return -1;
+        let k = holes.findIndex(i => this.blocks[i].start + this.blocks[i].size > this.nextPtr);
+        if (k < 0) k = 0;                                // pointer is past the last hole: wrap
+        for (let j = 0; j < holes.length; j++) {
+          const i = holes[(k + j) % holes.length];
+          if (fits(i)) return i;
+        }
+        return -1;
+      }
+    }
+    return -1;
+  }
+
+  /* ---------------------------------------------------------------------
+     ALLOCATE: returns { ok, kind, msg } where kind explains the outcome.
+     --------------------------------------------------------------------- */
+  allocate(name, req) {
+    if (!name) return { ok: false, kind: 'invalid', msg: 'A process name is required.' };
+    if (!Number.isInteger(req) || req <= 0) return { ok: false, kind: 'invalid', msg: 'Size must be a positive whole number of KB.' };
+    if (this.find(name) >= 0) return { ok: false, kind: 'invalid', msg: `A process called ${name} is already in memory.` };
+
+    const need = this.roundUp(req);
+    if (this.mode === 'buddy') return this.allocateBuddy(name, req, need);
+
+    const i = this.chooseHole(need);
+    if (i < 0) return this.fail(name, req, need);
+
+    // Split the chosen hole: process at the front, leftover (if any) stays free.
+    const hole = this.blocks[i];
+    const block = { start: hole.start, size: need, name, requested: req };
+    const parts = [block];
+    if (hole.size > need) parts.push({ start: hole.start + need, size: hole.size - need, name: null });
+    this.blocks.splice(i, 1, ...parts);
+
+    this.nextPtr = block.start + need;   // Next Fit resumes from here
+    this.counters.allocOk++;
+
+    let msg = `${name} (${req} KB): ${STRATEGY_NAMES[this.strategy]} chose the ${hole.size} KB hole at address ${hole.start} KB`;
+    if (need !== req) msg += `; rounded up to ${need} KB, so ${need - req} KB is internal fragmentation`;
+    msg += hole.size > need ? `; a ${hole.size - need} KB hole is left over.` : '; the hole was used exactly.';
+    return { ok: true, kind: 'alloc', msg };
+  }
+
+  /** Builds the "why did it fail?" explanation. */
+  fail(name, req, need) {
+    this.counters.allocFail++;
+    const s = this.stats();
+    const asked = need !== req ? `${req} KB requested (rounded up to ${need} KB)` : `${req} KB requested`;
+
+    if (need > this.totalSize) {
+      return { ok: false, kind: 'too-big', msg: `Failed (${name}): ${asked}, but the whole memory is only ${this.totalSize} KB.` };
+    }
+    if (s.free < need) {
+      // Not enough free memory at all, so this is NOT external fragmentation.
+      let msg = `Failed (${name}): ${asked}, but only ${s.free} KB is free in total, so there is simply not enough memory (this is not external fragmentation).`;
+      if (s.internal > 0 && s.free + s.internal >= need)
+        msg += ` Note: ${s.internal} KB is wasted inside allocated blocks (internal fragmentation). Without that waste there would be enough free memory.`;
+      return { ok: false, kind: 'no-memory', msg };
+    }
+    // Enough memory in total, but no single hole is big enough: EXTERNAL FRAGMENTATION.
+    this.counters.extFragFails++;
+    const word = this.mode === 'buddy' ? 'the largest free buddy block' : 'the largest hole';
+    let msg = `Failed (${name}): ${asked}, ${s.free} KB free in total, but ${word} is only ${s.largest} KB → external fragmentation.`;
+    if (this.mode === 'buddy') {
+      msg += ' A buddy block can only merge with its own buddy, and the buddy system does not compact.';
+    } else if (!this.coalesce && this.largestContiguousFree() >= need) {
+      msg += ` Adjacent holes add up to ${this.largestContiguousFree()} KB, so coalescing would have fixed this.`;
+    } else {
+      msg += ' Compaction would fix this.';
+    }
+    return { ok: false, kind: 'external', msg };
+  }
+
+  /* ---------------------------------------------------------------------
+     BUDDY SYSTEM ALLOCATION
+     1. Round the request up to a power of two (done by roundUp).
+     2. Take the smallest free block that is >= that size.
+     3. While the block is too big, split it into two equal "buddies"
+        and keep the left half.
+     --------------------------------------------------------------------- */
+  allocateBuddy(name, req, need) {
+    let bi = -1;
+    this.blocks.forEach((b, i) => {
+      if (!b.name && b.size >= need && (bi < 0 || b.size < this.blocks[bi].size)) bi = i;
+    });
+    if (bi < 0) return this.fail(name, req, need);
+
+    const splits = [this.blocks[bi].size];
+    while (this.blocks[bi].size > need) {
+      const b = this.blocks[bi], half = b.size / 2;
+      this.blocks.splice(bi, 1,
+        { start: b.start, size: half, name: null },            // left buddy (keep splitting this)
+        { start: b.start + half, size: half, name: null });    // right buddy stays free
+      splits.push(half);
+    }
+    Object.assign(this.blocks[bi], { name, requested: req });
+    this.counters.allocOk++;
+
+    let msg = `${name} (${req} KB): rounded up to ${need} KB (a power of 2)`;
+    if (need > req) msg += `, so ${need - req} KB is internal fragmentation`;
+    msg += splits.length > 1 ? `; split ${splits.join(' → ')} KB` : `; used a free ${need} KB block as it was`;
+    return { ok: true, kind: 'alloc', msg: msg + `; placed at address ${this.blocks[bi].start} KB.` };
+  }
+
+  /* ---------------------------------------------------------------------
+     FREE a process: its block becomes a hole, then (depending on settings)
+     it is coalesced with neighbouring holes, or merged with its buddy.
+     --------------------------------------------------------------------- */
+  free(name) {
+    const i = this.find(name);
+    if (i < 0) return { ok: false, kind: 'missing', msg: `${name} is not in memory (its allocation failed or it was already freed), so there is nothing to free.` };
+
+    const b = this.blocks[i];
+    this.blocks[i] = { start: b.start, size: b.size, name: null };
+    this.counters.frees++;
+    let msg = `${name} freed: ${b.size} KB at address ${b.start} KB is now a hole`;
+
+    if (this.mode === 'buddy') {
+      const merges = this.mergeBuddies(i);
+      msg += merges.length ? `; merged with its free buddy → ${merges.join(' → ')} KB` : '; its buddy is in use, so it cannot merge';
+    } else if (this.coalesce) {
+      const r = this.coalesceAround(i);
+      msg += r.merged ? `; coalesced with ${r.merged} neighbouring hole(s) into one ${r.size} KB hole` : '; no free neighbours to merge with';
+    } else {
+      msg += ' (coalescing is OFF, so neighbouring holes stay separate)';
+    }
+    return { ok: true, kind: 'free', msg: msg + '.' };
+  }
+
+  /** COALESCING: merge the hole at index i with every free block directly left/right of it. */
+  coalesceAround(i) {
+    let merged = 0;
+    while (this.blocks[i + 1] && !this.blocks[i + 1].name) {        // absorb right neighbours
+      this.blocks[i].size += this.blocks[i + 1].size;
+      this.blocks.splice(i + 1, 1);
+      merged++;
+    }
+    while (i > 0 && !this.blocks[i - 1].name) {                      // let left neighbours absorb us
+      this.blocks[i - 1].size += this.blocks[i].size;
+      this.blocks.splice(i, 1);
+      i--; merged++;
+    }
+    return { merged, size: this.blocks[i].size };
+  }
+
+  /** Merge every run of adjacent holes (the "Merge holes now" button). */
+  mergeAllHoles() {
+    let merges = 0;
+    for (let i = 0; i < this.blocks.length - 1;) {
+      const a = this.blocks[i], b = this.blocks[i + 1];
+      if (!a.name && !b.name) { a.size += b.size; this.blocks.splice(i + 1, 1); merges++; }
+      else i++;
+    }
+    return merges;
+  }
+
+  /**
+   * BUDDY MERGE: the buddy of a block at address A with size S is at A XOR S
+   * (for example, the 128 KB blocks at 0 and 128 are buddies, but 128 and 256 are not).
+   * Merge while the buddy is free and the same size, doubling each time.
+   */
+  mergeBuddies(i) {
+    const sizes = [];
+    let b = this.blocks[i];
+    while (b.size < this.totalSize) {
+      const buddyStart = b.start ^ b.size;
+      const j = this.blocks.findIndex(x => !x.name && x.start === buddyStart && x.size === b.size);
+      if (j < 0) break;                                   // buddy busy or split: stop
+      const lo = Math.min(i, j);                          // buddies sit next to each other in the list
+      const merged = { start: Math.min(b.start, buddyStart), size: b.size * 2, name: null };
+      this.blocks.splice(lo, 2, merged);
+      i = lo; b = merged;
+      sizes.push(merged.size);
+    }
+    return sizes;
+  }
+
+  /* ---------------------------------------------------------------------
+     COMPACTION: slide every process down towards address 0, one at a time.
+     compactStep() moves ONE block and returns {name, from, to, size}, or
+     null when nothing is left to move (the UI animates step by step).
+     The KB moved is the cost of compaction (data that has to be copied).
+     --------------------------------------------------------------------- */
+  compactStep() {
+    let cursor = 0;                                       // where the next process should start
+    for (const b of this.blocks) {
+      if (!b.name) continue;
+      if (b.start !== cursor) {
+        const move = { name: b.name, from: b.start, to: cursor, size: b.size };
+        b.start = cursor;                                 // relocate (on real hardware: copy + update base register)
+        this.counters.movedKB += b.size;
+        this.rebuildHoles();
+        return move;
+      }
+      cursor += b.size;
+    }
+    this.rebuildHoles();                                  // done: all free space is one hole at the end
+    this.nextPtr = cursor;
+    return null;
+  }
+
+  /** Recreate the hole list from the allocated blocks (every gap becomes exactly one hole). */
+  rebuildHoles() {
+    const used = this.blocks.filter(b => b.name).sort((a, b) => a.start - b.start);
+    const out = [];
+    let cursor = 0;
+    for (const b of used) {
+      if (b.start > cursor) out.push({ start: cursor, size: b.start - cursor, name: null });
+      out.push(b);
+      cursor = b.start + b.size;
+    }
+    if (cursor < this.totalSize) out.push({ start: cursor, size: this.totalSize - cursor, name: null });
+    this.blocks = out;
+  }
+
+  /** Full compaction in one call (used by the comparison runs). */
+  compact() {
+    if (this.mode === 'buddy') return { ok: false, kind: 'invalid', msg: 'Compaction is not used with the buddy system; buddies merge automatically instead.' };
+    const before = this.stats();
+    this.counters.compactions++;
+    const moves = [];
+    let m;
+    while ((m = this.compactStep())) moves.push(m);
+    return this.compactionResult(before, moves);
+  }
+
+  compactionResult(before, moves) {
+    const after = this.stats();
+    const kb = moves.reduce((sum, m) => sum + m.size, 0);
+    let msg = moves.length
+      ? `Compaction moved ${moves.length} process(es), copying ${kb} KB (this copying is the cost of compaction). `
+      : 'Compaction: no process needed to move (0 KB copied). ';
+    msg += after.free
+      ? `Free memory is now ONE ${after.free} KB hole (before: ${before.holes} hole(s), the largest ${before.largest} KB).`
+      : 'Memory is completely full, so there is no free space to gather.';
+    return { ok: true, kind: 'compact', msg, movedKB: kb, moves };
+  }
+}
+
+
+/* =========================================================================
+   3. WORKLOADS: seeded random generator + scripted demo scenarios
+   A workload is a list of operations:
+     { type:'alloc', name, size } | { type:'free', name } | { type:'compact' }
+   ========================================================================= */
+
+/** Mulberry32: a tiny seeded pseudo-random generator. The same seed always gives the same sequence. */
+function mulberry32(seed) {
+  return function () {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const A = (name, size) => ({ type: 'alloc', name, size });
+const F = name => ({ type: 'free', name });
+const C = () => ({ type: 'compact' });
+
+/**
+ * Random workload: each step frees a random live process with probability
+ * freePct%, otherwise it allocates a new process P<k> with a random size.
+ * "Live" assumes every allocation succeeds. If one fails, its later FREE is
+ * simply reported as "nothing to free". That is identical for every strategy,
+ * so comparisons stay fair.
+ */
+function generateRandomWorkload({ n, seed, freePct, minSize, maxSize }) {
+  const rand = mulberry32(seed);
+  const ops = [], live = [];
+  let id = 0;
+  for (let k = 0; k < n; k++) {
+    if (live.length && rand() * 100 < freePct) {
+      const name = live.splice(Math.floor(rand() * live.length), 1)[0];
+      ops.push(F(name));
+    } else {
+      const name = 'P' + (++id);
+      ops.push(A(name, minSize + Math.floor(rand() * (maxSize - minSize + 1))));
+      live.push(name);
+    }
+  }
+  return ops;
+}
+
+/** Scripted scenarios for the viva demo. `settings` are applied before loading. */
+const SCENARIOS = {
+  external: {
+    label: 'Demo: external fragmentation → compaction',
+    settings: { totalSize: 1024, mode: 'variable', coalesce: true },
+    intro: 'Six processes use 900 KB. Freeing P2 and P4 leaves three separate holes (324 KB free). At step 9 a 150 KB request fails because of external fragmentation. Step 10 compacts and step 11 succeeds. Press Next ▶.',
+    ops: [A('P1', 200), A('P2', 100), A('P3', 200), A('P4', 100), A('P5', 200), A('P6', 100), F('P2'), F('P4'), A('P7', 150), C(), A('P7', 150)],
+  },
+  coalesce: {
+    label: 'Demo: coalescing OFF vs ON',
+    settings: { totalSize: 1024, mode: 'variable', coalesce: false },
+    intro: 'Coalescing is OFF. P2 and P3 are freed next to each other, but their holes stay separate, so the 500 KB request at step 6 fails. Then tick "Coalesce holes on free", press ⏮ Start and replay: it succeeds.',
+    ops: [A('P1', 300), A('P2', 300), A('P3', 300), F('P2'), F('P3'), A('P4', 500)],
+  },
+  internal: {
+    label: 'Demo: internal fragmentation (64 KB blocks)',
+    settings: { totalSize: 1024, mode: 'block', blockSize: 64 },
+    intro: 'Every request is rounded up to a multiple of 64 KB. Watch the hatched waste grow. The last request fails even though 764 KB is requested in total, because the rounding wasted 196 KB.',
+    ops: [A('P1', 70), A('P2', 130), A('P3', 64), A('P4', 200), A('P5', 300), A('P6', 100)],
+  },
+  buddy: {
+    label: 'Demo: buddy system',
+    settings: { totalSize: 1024, mode: 'buddy', minBuddy: 32 },
+    intro: 'Requests are rounded up to powers of 2 and blocks are split in halves. Freed blocks merge only with their own buddy. P5 (needs 512 KB) fails at step 7 although 512 KB is free, then succeeds once P2 is freed.',
+    ops: [A('P1', 100), A('P2', 240), A('P3', 60), A('P4', 130), F('P1'), F('P3'), A('P5', 300), F('P2'), A('P5', 300)],
+  },
+};
+
+/** Applies one workload operation to a memory manager (no animation). */
+function applyOp(mem, op) {
+  if (op.type === 'alloc') return mem.allocate(op.name, op.size);
+  if (op.type === 'free') return mem.free(op.name);
+  return mem.compact();
+}
+
+function opText(op) {
+  if (op.type === 'alloc') return `ALLOC ${op.name} ${op.size} KB`;
+  if (op.type === 'free') return `FREE  ${op.name}`;
+  return 'COMPACT memory';
+}
+
+
+/* =========================================================================
+   4. APPLICATION STATE
+   ========================================================================= */
+const cfg = { totalSize: 1024, strategy: 'first', mode: 'variable', blockSize: 64, minBuddy: 32, coalesce: true };
+let mm = new MemoryManager(cfg);
+
+const ui = {
+  selected: null,     // process name selected on the map
+  busy: false,        // true while compaction is animating
+  log: [],            // event log entries {kind, text}
+  flash: null,        // newly allocated process (flash once)
+  moving: null,       // process currently being moved by compaction
+  lastResult: null,   // what the banner shows
+};
+
+const player = {
+  ops: [],            // the workload
+  results: [],        // 'ok' | 'fail' | 'skip' per executed step
+  index: 0,           // number of steps executed so far
+  history: [],        // history[i] = snapshot after i steps (lets "Previous" undo)
+  playing: false,
+  label: '',
+};
+
+const speed = () => +$('speed').value;
+const snap = () => ({ mem: mm.snapshot(), logLen: ui.log.length, banner: ui.lastResult });
+function restoreSnap(s) {
+  mm.restore(s.mem);
+  if (ui.log.length > s.logLen) ui.log.length = s.logLen;
+  ui.lastResult = s.banner;
+  ui.selected = null;
+}
+
+function log(kind, text) { ui.log.push({ kind, text }); }
+
+/** Log a result object from the memory manager with the right colour. */
+function logResult(res, prefix = '') {
+  const kind = res.kind === 'missing' ? 'info'
+    : !res.ok ? 'fail'
+    : res.kind === 'free' ? 'free'
+    : res.kind === 'compact' ? 'compact' : 'alloc';
+  log(kind, prefix + res.msg);
+}
+
+function suggestName() {
+  let max = 0;
+  const scan = n => { const m = /^P(\d+)$/.exec(n || ''); if (m) max = Math.max(max, +m[1]); };
+  mm.blocks.forEach(b => scan(b.name));
+  player.ops.forEach(o => scan(o.name));
+  return 'P' + (max + 1);
+}
+
+
+/* =========================================================================
+   5. RENDERING
+   ========================================================================= */
+
+/**
+ * Draws a memory bar. In the main (interactive) bar, process elements are
+ * reused by name, so when a process moves (compaction) the CSS transition on
+ * `left` animates it sliding into place.
+ */
+function renderBar(bar, mem, opt = {}) {
+  const total = mem.totalSize;
+  if (!bar._els) bar._els = new Map();
+  const seen = new Set();
+
+  for (const b of mem.blocks) {
+    const key = b.name ? 'p:' + b.name : 'h:' + b.start;
+    seen.add(key);
+    let el = bar._els.get(key);
+    const isNew = !el;
+    if (isNew) {
+      el = document.createElement('div');
+      if (b.name && opt.interactive) el.addEventListener('click', () => selectProcess(b.name));
+    }
+    const frac = b.size / total;
+    el.style.left = (b.start / total * 100) + '%';
+    el.style.width = (frac * 100) + '%';
+
+    if (b.name) {
+      const waste = b.size - b.requested;
+      el.className = 'seg proc'
+        + (opt.interactive && ui.selected === b.name ? ' selected' : '')
+        + (opt.interactive && ui.moving === b.name ? ' moving' : '')
+        + (opt.interactive && ui.flash === b.name ? ' flash' : '');
+      el.style.background = colorFor(b.name);
+      const sizeTxt = waste ? `${b.requested}/${b.size}K` : `${b.size}K`;
+      const label = opt.mini ? '' : frac >= 0.045 ? `<b>${esc(b.name)}</b><span>${sizeTxt}</span>` : frac >= 0.02 ? `<b>${esc(b.name)}</b>` : '';
+      el.innerHTML = (waste > 0 ? `<div class="waste" style="width:${waste / b.size * 100}%"></div>` : '') + `<div class="lbl">${label}</div>`;
+      el.title = `${b.name}\nAddress ${b.start}–${b.start + b.size} KB\nRequested ${b.requested} KB, allocated ${b.size} KB\nInternal fragmentation ${waste} KB`;
+    } else {
+      el.className = 'seg hole';
+      el.style.background = '';
+      el.innerHTML = opt.mini ? '' : `<div class="lbl">${frac >= 0.04 ? `free<span>${b.size}K</span>` : ''}</div>`;
+      el.title = `Free hole\nAddress ${b.start}–${b.start + b.size} KB\nSize ${b.size} KB`;
+    }
+    if (isNew) { bar.appendChild(el); bar._els.set(key, el); }
+  }
+  for (const [k, el] of bar._els) if (!seen.has(k)) { el.remove(); bar._els.delete(k); }
+}
+
+function renderAxis() {
+  const t = mm.totalSize;
+  $('axis').innerHTML = [0, .25, .5, .75, 1].map(f => `<span style="left:${f * 100}%">${Math.round(t * f)} KB</span>`).join('');
+}
+
+function tile(k, v, sub = '', extra = '') {
+  return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div>${extra}${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+}
+
+function renderStats() {
+  const s = mm.stats(), c = mm.counters, T = mm.totalSize;
+  $('stats').innerHTML =
+    tile('Total free memory', `${s.free} KB`, `${pct(s.free / T)} of ${T} KB`) +
+    tile('Number of holes', s.holes, s.holes > 1 ? 'free space is split' : 'free space is contiguous') +
+    tile('Largest hole', `${s.largest} KB`, 'biggest request that fits now') +
+    tile('External fragmentation', pct(s.extFrag), '1 − largest ÷ total free', `<div class="meter"><i style="width:${s.extFrag * 100}%"></i></div>`) +
+    tile('Internal fragmentation', `${s.internal} KB`, 'allocated − requested (hatched)') +
+    tile('Processes', s.procs, `${s.requested} KB requested, ${s.used} KB allocated`) +
+    tile('Allocations', `${c.allocOk} ✓ / ${c.allocFail} ✗`, `${c.extFragFails} failed due to ext. frag.`) +
+    tile('Compaction cost', `${c.movedKB} KB`, `moved in ${c.compactions} compaction(s)`);
+}
+
+function renderProcTable() {
+  const procs = mm.blocks.filter(b => b.name);
+  $('procBody').innerHTML = procs.length ? procs.map(b => `
+    <tr class="${ui.selected === b.name ? 'sel' : ''}" data-name="${esc(b.name)}">
+      <td><span class="sw" style="background:${colorFor(b.name)}"></span>${esc(b.name)}</td>
+      <td>${b.start}</td><td>${b.start + b.size}</td><td>${b.requested} KB</td><td>${b.size} KB</td>
+      <td>${b.size - b.requested} KB</td>
+      <td><button class="mini-btn" data-free="${esc(b.name)}">Free</button></td>
+    </tr>`).join('') : '<tr><td colspan="7" class="muted">No processes in memory.</td></tr>';
+
+  const sel = $('freeSel');
+  sel.innerHTML = '<option value="">— select process —</option>' +
+    procs.map(b => `<option value="${esc(b.name)}">${esc(b.name)} (${b.size} KB @ ${b.start})</option>`).join('');
+  sel.value = ui.selected || '';
+}
+
+const TAGS = { external: 'External fragmentation', 'no-memory': 'Out of memory', 'too-big': 'Too large', invalid: 'Not allowed',
+  alloc: 'Allocated', free: 'Freed', compact: 'Compacted', missing: 'Skipped', info: 'Info', merge: 'Merged' };
+const toneOf = r => (r.kind === 'info' || r.kind === 'missing') ? 'info' : r.ok ? 'ok' : 'bad';
+
+function renderBanner() {
+  const r = ui.lastResult || { ok: true, kind: 'info', msg: 'Allocate a process, or load a workload and press Next ▶.' };
+  $('banner').className = 'banner ' + toneOf(r);
+  $('banner').innerHTML = `<span class="tag">${TAGS[r.kind] || ''}</span>${esc(r.msg)}`;
+}
+
+function renderOps() {
+  const el = $('ops');
+  if (!player.ops.length) {
+    el.innerHTML = '<div class="op muted">No workload loaded.</div>';
+  } else {
+    el.innerHTML = player.ops.map((op, i) => {
+      const st = i < player.index ? 'done' : i === player.index ? 'current' : '';
+      const r = player.results[i];
+      const mark = r === 'ok' ? '<span class="okm">✓</span>' : r === 'fail' ? '<span class="badm">✗</span>' : r === 'skip' ? '<span class="muted">–</span>' : '<span></span>';
+      return `<div class="op ${st}">${mark}<span class="n">${i + 1}</span><span>${esc(opText(op))}</span></div>`;
+    }).join('');
+    const cur = el.querySelector('.current');   // keep the current step visible (without scrolling the page)
+    if (cur) el.scrollTop = cur.offsetTop - el.clientHeight / 2;
+  }
+  const n = player.ops.length;
+  $('stepInfo').textContent = !n ? 'Load a workload to use step-by-step mode.'
+    : player.index < n ? `Step ${player.index} / ${n}. Next: ${opText(player.ops[player.index])}   (${player.label})`
+    : `Step ${n} / ${n}: finished (${player.label})`;
+}
+
+function renderLog() {
+  const el = $('log');
+  el.innerHTML = ui.log.map((e, i) => `<div class="le ${e.kind}"><span class="n">${i + 1}</span>${esc(e.text)}</div>`).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+/** Enable/disable controls according to mode, busy state and player position. */
+function renderControls() {
+  const busy = ui.busy, buddy = cfg.mode === 'buddy';
+  ['allocBtn', 'freeBtn', 'resetBtn', 'applySize', 'loadBtn', 'compareBtn', 'rewindBtn', 'scenario', 'blockSize', 'minBuddy']
+    .forEach(id => $(id).disabled = busy);
+  document.querySelectorAll('input[name=mode]').forEach(r => r.disabled = busy);
+  $('compactBtn').disabled = busy || buddy;
+  $('mergeNow').disabled = busy || buddy;
+  $('strategy').disabled = buddy;
+  $('coalesce').disabled = buddy;
+  $('prevBtn').disabled = busy || player.index === 0;
+  $('nextBtn').disabled = busy || player.index >= player.ops.length;
+  $('playBtn').textContent = player.playing ? '⏸ Pause' : '⏵ Auto-play';
+  $('playBtn').disabled = !player.playing && player.index >= player.ops.length;
+  $('randomParams').style.display = $('scenario').value === 'random' ? '' : 'none';
+  $('pName').placeholder = suggestName();
+  $('speedLbl').textContent = speed() + ' ms/step';
+  document.documentElement.style.setProperty('--anim', Math.min(600, speed() * 0.7) + 'ms');
+
+  const ptr = $('ptr');
+  ptr.style.display = cfg.strategy === 'next' && !buddy ? '' : 'none';
+  ptr.style.left = (mm.nextPtr / mm.totalSize * 100) + '%';
+
+  $('mapCaption').textContent = `${mm.totalSize} KB · ${MODE_NAMES[cfg.mode]}`
+    + (cfg.mode === 'block' ? ` (${cfg.blockSize} KB)` : cfg.mode === 'buddy' ? ` (min ${cfg.minBuddy} KB)` : '')
+    + (buddy ? '' : ` · ${STRATEGY_NAMES[cfg.strategy]} · coalescing ${cfg.coalesce ? 'ON' : 'OFF'}`);
+
+  document.querySelectorAll('.explain details[data-strategy]').forEach(d =>
+    d.classList.toggle('current', !buddy && d.dataset.strategy === cfg.strategy));
+}
+
+function renderAll() {
+  renderBar($('membar'), mm, { interactive: true });
+  ui.flash = null;
+  renderAxis(); renderStats(); renderProcTable(); renderBanner(); renderOps(); renderLog(); renderControls();
+}
+
+
+/* =========================================================================
+   6. USER ACTIONS
+   ========================================================================= */
+function selectProcess(name) {
+  ui.selected = ui.selected === name ? null : name;
+  renderAll();
+}
+
+function showMessage(ok, kind, msg) { ui.lastResult = { ok, kind, msg }; renderBanner(); }
+
+function doAllocate() {
+  if (ui.busy) return;
+  const name = ($('pName').value.trim() || suggestName()).slice(0, 12);
+  const res = mm.allocate(name, Number($('pSize').value));
+  logResult(res);
+  ui.lastResult = res;
+  if (res.ok) { ui.flash = name; $('pName').value = ''; }
+  renderAll();
+}
+
+function doFree(name) {
+  if (ui.busy) return;
+  if (!name) return showMessage(false, 'invalid', 'Select a process to free first: click it on the memory map or pick it in the list.');
+  const res = mm.free(name);
+  logResult(res);
+  ui.lastResult = res;
+  if (ui.selected === name) ui.selected = null;
+  renderAll();
+}
+
+/**
+ * Animated compaction: moves one process per tick so you can see each
+ * relocation and its cost. Returns the same result object as mm.compact().
+ */
+async function animateCompaction(prefix = '') {
+  if (cfg.mode === 'buddy') return mm.compact();          // returns the "not used" message
+  ui.busy = true;
+  const before = mm.stats();
+  mm.counters.compactions++;
+  log('compact', `${prefix}Compaction started: ${before.holes} hole(s), largest ${before.largest} KB of ${before.free} KB free.`);
+  renderAll();
+
+  const moves = [];
+  let m;
+  while ((m = mm.compactStep())) {
+    moves.push(m);
+    ui.moving = m.name;
+    log('compact', `${prefix}  move ${m.name} (${m.size} KB): address ${m.from} → ${m.to} KB`);
+    renderAll();
+    await sleep(Math.max(300, speed()));
+  }
+  ui.moving = null;
+  ui.busy = false;
+  return mm.compactionResult(before, moves);
+}
+
+async function doCompact() {
+  if (ui.busy) return;
+  const res = await animateCompaction();
+  logResult(res);
+  ui.lastResult = res;
+  renderAll();
+}
+
+/** Rebuilds memory after a settings change and rewinds the loaded workload. */
+function rebuildMemory(reason) {
+  stopAuto();
+  mm = new MemoryManager(cfg);
+  ui.selected = null;
+  log('reset', reason);
+  ui.lastResult = { ok: true, kind: 'info', msg: reason };
+  player.index = 0; player.results = []; player.history = [snap()];
+  renderAll();
+}
+
+/** Copies cfg into the form controls (used when a scenario changes settings). */
+function syncControls() {
+  $('totalSize').value = cfg.totalSize;
+  $('strategy').value = cfg.strategy;
+  $('coalesce').checked = cfg.coalesce;
+  $('blockSize').value = cfg.blockSize;
+  $('minBuddy').value = cfg.minBuddy;
+  document.querySelectorAll('input[name=mode]').forEach(r => r.checked = r.value === cfg.mode);
+}
+
+
+/* =========================================================================
+   7. STEP-BY-STEP PLAYER
+   After each step the full memory state is snapshotted, so "Previous"
+   simply restores the snapshot from one step earlier.
+   ========================================================================= */
+function loadWorkload(ops, label, settings, intro) {
+  stopAuto();
+  if (settings) { Object.assign(cfg, settings); syncControls(); }
+  mm = new MemoryManager(cfg);
+  ui.selected = null;
+  player.ops = ops; player.label = label; player.index = 0; player.results = [];
+  log('info', `Loaded workload "${label}" (${ops.length} steps). Memory reset.`);
+  ui.lastResult = { ok: true, kind: 'info', msg: intro || `Loaded "${label}". Press Next ▶ (or the → key) to run it step by step.` };
+  player.history = [snap()];
+  renderAll();
+}
+
+function readRandomParams() {
+  const p = { n: +$('wN').value, seed: +$('wSeed').value, freePct: +$('wFree').value, minSize: +$('wMin').value, maxSize: +$('wMax').value };
+  if (!(p.n >= 1 && p.n <= 5000)) return 'N must be between 1 and 5000.';
+  if (!(p.minSize >= 1 && p.maxSize >= p.minSize)) return 'Size range must satisfy 1 ≤ min ≤ max.';
+  if (!(p.freePct >= 0 && p.freePct <= 100)) return 'Free % must be between 0 and 100.';
+  return p;
+}
+
+function loadSelected() {
+  if (ui.busy) return;
+  const key = $('scenario').value;
+  if (key === 'random') {
+    const p = readRandomParams();
+    if (typeof p === 'string') return showMessage(false, 'invalid', p);
+    loadWorkload(generateRandomWorkload(p), `Random N=${p.n}, seed=${p.seed}`);
+  } else {
+    const sc = SCENARIOS[key];
+    loadWorkload(sc.ops, sc.label, sc.settings, sc.intro);
+  }
+}
+
+async function stepNext() {
+  if (ui.busy || player.index >= player.ops.length) return;
+  const op = player.ops[player.index];
+  const prefix = `[step ${player.index + 1}] `;
+  const res = op.type === 'compact' ? await animateCompaction(prefix) : applyOp(mm, op);
+  logResult(res, prefix);
+  if (op.type === 'alloc' && res.ok) ui.flash = op.name;
+  player.results[player.index] = res.ok ? 'ok' : res.kind === 'missing' ? 'skip' : 'fail';
+  player.index++;
+  ui.lastResult = res;
+  player.history[player.index] = snap();
+  player.history.length = player.index + 1;     // drop any "future" from earlier runs
+  renderAll();
+}
+
+function stepPrev() {
+  if (ui.busy || player.index === 0) return;
+  stopAuto();
+  player.index--;
+  restoreSnap(player.history[player.index]);
+  player.results.length = player.index;
+  renderAll();
+}
+
+function rewind() {
+  if (ui.busy || !player.history.length) return;
+  stopAuto();
+  player.index = 0;
+  restoreSnap(player.history[0]);
+  player.results = [];
+  renderAll();
+}
+
+function stopAuto() { player.playing = false; }
+
+async function toggleAuto() {
+  if (player.playing) { stopAuto(); renderControls(); return; }
+  if (player.index >= player.ops.length) return;
+  player.playing = true;
+  renderControls();
+  while (player.playing && player.index < player.ops.length) {
+    await stepNext();
+    if (player.index < player.ops.length) await sleep(speed());
+  }
+  player.playing = false;
+  renderControls();
+}
+
+
+/* =========================================================================
+   8. COMPARISON: run the SAME workload through each strategy, headless
+   ========================================================================= */
+function runHeadless(c, label, ops) {
+  const m = new MemoryManager(c);
+  let fragSum = 0;
+  for (const op of ops) { applyOp(m, op); fragSum += m.stats().extFrag; }
+  const s = m.stats();
+  return {
+    label, mem: m,
+    allocOk: m.counters.allocOk, allocFail: m.counters.allocFail, extFragFails: m.counters.extFragFails,
+    free: s.free, holes: s.holes, largest: s.largest, extFrag: s.extFrag,
+    avgFrag: ops.length ? fragSum / ops.length : 0, internal: s.internal,
+  };
+}
+
+function runComparison() {
+  if (ui.busy) return;
+  if (!player.ops.length) {
+    const p = readRandomParams();
+    if (typeof p === 'string') return showMessage(false, 'invalid', p);
+    $('scenario').value = 'random';
+    loadWorkload(generateRandomWorkload(p), `Random N=${p.n}, seed=${p.seed}`);
+  }
+  const ops = player.ops;
+  // Fit strategies don't apply in buddy mode, so run them with variable partitions in that case.
+  const base = { ...cfg, mode: cfg.mode === 'buddy' ? 'variable' : cfg.mode };
+  const rows = ['first', 'best', 'worst', 'next'].map(s => runHeadless({ ...base, strategy: s }, STRATEGY_NAMES[s], ops));
+  if (isPow2(cfg.totalSize) && isPow2(cfg.minBuddy)) {
+    const r = runHeadless({ ...cfg, mode: 'buddy' }, 'Buddy System', ops);
+    r.isRef = true;
+    rows.push(r);
+  }
+
+  // Mark the best value(s) in each column among the four fit strategies.
+  const fits = rows.filter(r => !r.isRef);
+  const bestOf = (key, dir) => {
+    const vals = fits.map(r => r[key]);
+    const b = dir === 'min' ? Math.min(...vals) : Math.max(...vals);
+    return r => !r.isRef && r[key] === b ? ' class="best"' : '';
+  };
+  const B = {
+    allocOk: bestOf('allocOk', 'max'), allocFail: bestOf('allocFail', 'min'), extFragFails: bestOf('extFragFails', 'min'),
+    holes: bestOf('holes', 'min'), largest: bestOf('largest', 'max'), extFrag: bestOf('extFrag', 'min'), avgFrag: bestOf('avgFrag', 'min'),
+  };
+  const winners = (key, dir) => {
+    const b = dir === 'min' ? Math.min(...fits.map(r => r[key])) : Math.max(...fits.map(r => r[key]));
+    return fits.filter(r => r[key] === b).map(r => r.label).join(', ');
+  };
+
+  $('cmpOut').innerHTML = `
+    <p class="muted small">Workload "${esc(player.label)}" (${ops.length} steps) · ${cfg.totalSize} KB · ${MODE_NAMES[base.mode]}${base.mode === 'block' ? ` (${cfg.blockSize} KB)` : ''}
+      · coalescing ${cfg.coalesce ? 'ON' : 'OFF'}. Every strategy receives the same requests in the same order. Green = best among the four fits.
+      ${cfg.mode === 'buddy' ? 'Fit strategies were run with variable partitions because they do not apply to the buddy system.' : ''}</p>
+    <div class="tablewrap"><table>
+      <thead><tr>
+        <th>Strategy</th><th>Allocated ✓</th><th>Failed ✗</th><th title="Failures where enough memory was free in total">…due to ext. frag.</th>
+        <th>Final free</th><th>Holes</th><th>Largest hole</th><th>Ext. frag. (final)</th><th title="Average of the metric after every step">Ext. frag. (avg)</th><th>Internal frag.</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `
+        <tr class="${r.isRef ? 'ref' : ''}">
+          <td>${r.label}${r.isRef ? ' (reference)' : ''}</td>
+          <td${B.allocOk(r)}>${r.allocOk}</td><td${B.allocFail(r)}>${r.allocFail}</td><td${B.extFragFails(r)}>${r.extFragFails}</td>
+          <td>${r.free} KB</td><td${B.holes(r)}>${r.holes}</td><td${B.largest(r)}>${r.largest} KB</td>
+          <td${B.extFrag(r)}>${pct(r.extFrag)}</td><td${B.avgFrag(r)}>${pct(r.avgFrag)}</td><td>${r.internal} KB</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    <p><b>Fewest failed allocations:</b> ${winners('allocFail', 'min')}. <b>Lowest average fragmentation:</b> ${winners('avgFrag', 'min')}.
+       <b>Largest final hole:</b> ${winners('largest', 'max')}.</p>
+    <div id="cmpBars"></div>`;
+
+  // A miniature final memory map for every strategy.
+  const bars = $('cmpBars');
+  rows.forEach(r => {
+    const lbl = document.createElement('div');
+    lbl.className = 'small muted';
+    lbl.style.margin = '8px 0 2px';
+    lbl.textContent = `${r.label}: final memory`;
+    const bar = document.createElement('div');
+    bar.className = 'membar mini';
+    bars.append(lbl, bar);
+    renderBar(bar, r.mem, { mini: true });
+  });
+
+  log('info', `Comparison run on "${player.label}": ` + fits.map(r => `${r.label} ${r.allocFail} failed / ${pct(r.avgFrag)} avg frag`).join('; '));
+  renderLog();
+}
+
+
+/* =========================================================================
+   9. WIRING UP THE CONTROLS + START-UP
+   ========================================================================= */
+$('allocBtn').onclick = doAllocate;
+$('pSize').addEventListener('keydown', e => { if (e.key === 'Enter') doAllocate(); });
+$('pName').addEventListener('keydown', e => { if (e.key === 'Enter') doAllocate(); });
+$('freeBtn').onclick = () => doFree($('freeSel').value || ui.selected);
+$('freeSel').onchange = e => { ui.selected = e.target.value || null; renderAll(); };
+$('compactBtn').onclick = doCompact;
+$('resetBtn').onclick = () => { if (!ui.busy) rebuildMemory('Memory reset: all processes removed (the workload is rewound to step 0).'); };
+
+$('procBody').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-free]');
+  if (btn) return doFree(btn.dataset.free);
+  const row = e.target.closest('tr[data-name]');
+  if (row) selectProcess(row.dataset.name);
+});
+
+$('applySize').onclick = () => {
+  const v = +$('totalSize').value;
+  if (!Number.isInteger(v) || v < 16 || v > 1048576) return showMessage(false, 'invalid', 'Total memory must be a whole number between 16 and 1048576 KB.');
+  if (cfg.mode === 'buddy' && !isPow2(v)) return showMessage(false, 'invalid', `The buddy system needs a power-of-2 memory size (e.g. 512, 1024, 2048); ${v} is not.`);
+  cfg.totalSize = v;
+  rebuildMemory(`Total memory set to ${v} KB. Memory reset.`);
+};
+
+$('strategy').onchange = e => {
+  cfg.strategy = mm.strategy = e.target.value;
+  log('info', `Strategy changed to ${STRATEGY_NAMES[cfg.strategy]} (applies to the next allocations).`);
+  renderAll();
+};
+
+$('coalesce').onchange = e => {
+  cfg.coalesce = mm.coalesce = e.target.checked;
+  log('info', `Coalescing ${cfg.coalesce ? 'ON: freed blocks merge with neighbouring holes' : 'OFF: freed blocks stay as separate holes'}.`);
+  renderAll();
+};
+
+$('mergeNow').onclick = () => {
+  const n = mm.mergeAllHoles();
+  const res = { ok: true, kind: 'merge', msg: n ? `Merged ${n} pair(s) of adjacent holes.` : 'No adjacent holes to merge.' };
+  log('free', res.msg);
+  ui.lastResult = res;
+  renderAll();
+};
+
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => {
+  if (r.value === 'buddy' && !(isPow2(cfg.totalSize) && isPow2(cfg.minBuddy))) {
+    syncControls();
+    return showMessage(false, 'invalid', 'The buddy system needs the total memory and the min block to be powers of 2 (e.g. 1024 and 32).');
+  }
+  cfg.mode = r.value;
+  rebuildMemory(`Mode changed to ${MODE_NAMES[cfg.mode]}. Memory reset.`);
+}));
+
+$('blockSize').onchange = e => {
+  const v = +e.target.value;
+  if (!Number.isInteger(v) || v < 1 || v > cfg.totalSize) { syncControls(); return showMessage(false, 'invalid', 'Block size must be a whole number between 1 and the memory size.'); }
+  cfg.blockSize = v;
+  if (cfg.mode === 'block') rebuildMemory(`Block size set to ${v} KB. Memory reset.`);
+};
+
+$('minBuddy').onchange = e => {
+  const v = +e.target.value;
+  if (!isPow2(v) || v > cfg.totalSize) { syncControls(); return showMessage(false, 'invalid', 'The minimum buddy block must be a power of 2 that is no bigger than memory.'); }
+  cfg.minBuddy = v;
+  if (cfg.mode === 'buddy') rebuildMemory(`Minimum buddy block set to ${v} KB. Memory reset.`);
+};
+
+$('scenario').onchange = renderControls;
+$('loadBtn').onclick = loadSelected;
+$('nextBtn').onclick = stepNext;
+$('prevBtn').onclick = stepPrev;
+$('rewindBtn').onclick = rewind;
+$('playBtn').onclick = toggleAuto;
+$('speed').oninput = renderControls;
+$('compareBtn').onclick = runComparison;
+$('clearLog').onclick = () => { ui.log = []; player.history.forEach(h => h.logLen = 0); renderLog(); };
+
+// Keyboard shortcuts for demos: → next, ← previous, space play/pause.
+document.addEventListener('keydown', e => {
+  if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(e.target.tagName) && e.key === ' ') return;
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); stepNext(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); stepPrev(); }
+  else if (e.key === ' ') { e.preventDefault(); toggleAuto(); }
+});
+
+// Start with the external-fragmentation demo loaded (but not run).
+log('info', 'Simulator ready.');
+loadSelected();
+</script>
+</body>
+</html>
